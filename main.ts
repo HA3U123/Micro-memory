@@ -1,32 +1,110 @@
 /**
- * Архитектурный модуль Файловой Системы для micro:bit OS
+ * Архитектурный модуль Файловой Системы для micro:bit OS с защитой от симулятора
  */
 //% color="#1e6b7b" icon="\uf0a0" block="Файлы ОС"
 namespace customOSFiles {
 
     const INDEX_FILE = ".sys_files";
 
+    // --- СЕКТОР ЗАЩИТЫ ОТ СИМУЛЯТОРА ---
+    // Виртуальное хранилище в оперативной памяти симулятора
+    let simStorage: { [key: string]: string } = {};
+
+    // Функция проверки: мы в симуляторе (на ПК) или на реальном железе?
+    function isSimulator(): boolean {
+        // Если объект uBit не определен, значит мы на 100% в симуляторе браузера
+        return typeof uBit === "undefined";
+    }
+
+    // Обертка для записи данных
+    function safeWrite(filename: string, data: string): void {
+        if (isSimulator()) {
+            simStorage[filename] = data;
+        } else {
+            writeFile(filename, data);
+        }
+    }
+
+    // Обертка для чтения данных
+    function safeRead(filename: string): string {
+        if (isSimulator()) {
+            return simStorage[filename] || "";
+        } else {
+            return readFile(filename);
+        }
+    }
+
+    // Обертка для проверки существования файла
+    function safeExists(filename: string): boolean {
+        if (isSimulator()) {
+            return simStorage[filename] !== undefined;
+        } else {
+            return fileExists(filename);
+        }
+    }
+
+    // Обертка для удаления файла
+    function safeRemove(filename: string): void {
+        if (isSimulator()) {
+            delete simStorage[filename];
+        } else {
+            removeFile(filename);
+        }
+    }
+
+    // Обертка для дозаписи данных
+    function safeAppend(filename: string, data: string): void {
+        if (isSimulator()) {
+            let current = simStorage[filename] || "";
+            simStorage[filename] = current + data;
+        } else {
+            appendFile(filename, data);
+        }
+    }
+
+    // Обертка для получения размера файла
+    function safeSize(filename: string): number {
+        if (isSimulator()) {
+            let current = simStorage[filename] || "";
+            return current.length; 
+        } else {
+            return getFileSize(filename);
+        }
+    }
+
+    // Обертка для полной очистки
+    function safeClear(): void {
+        if (isSimulator()) {
+            simStorage = {};
+        } else {
+            clearStorage();
+        }
+    }
+    // --- КОНЕЦ СЕКТОРА ЗАЩИТЫ ---
+
+
+    // Системные функции индексов ОС теперь используют защищенные обертки
     function addToIndex(filename: string) {
         if (filename == INDEX_FILE) return;
-        let index = readFile(INDEX_FILE);
+        let index = safeRead(INDEX_FILE);
         let list = index.split(",");
         if (list.indexOf(filename) === -1) {
             if (index.length > 0) {
-                appendFile(INDEX_FILE, "," + filename);
+                safeAppend(INDEX_FILE, "," + filename);
             } else {
-                writeFile(INDEX_FILE, filename);
+                safeWrite(INDEX_FILE, filename);
             }
         }
     }
 
     function removeFromIndex(filename: string) {
         if (filename == INDEX_FILE) return;
-        let index = readFile(INDEX_FILE);
+        let index = safeRead(INDEX_FILE);
         let list = index.split(",");
         let itemIndex = list.indexOf(filename);
         if (itemIndex !== -1) {
             list.splice(itemIndex, 1);
-            writeFile(INDEX_FILE, list.join(","));
+            safeWrite(INDEX_FILE, list.join(","));
         }
     }
 
@@ -36,7 +114,7 @@ namespace customOSFiles {
     //% block="ОС: Записать в файл %filename текст %data"
     //% weight=100
     export function osWrite(filename: string, data: string): void {
-        writeFile(filename, data);
+        safeWrite(filename, data);
         addToIndex(filename);
     }
 
@@ -46,7 +124,7 @@ namespace customOSFiles {
     //% block="ОС: Дописать строку %data в файл %filename"
     //% weight=95
     export function osAppend(filename: string, data: string): void {
-        appendFile(filename, data + "\n");
+        safeAppend(filename, data + "\n");
         addToIndex(filename);
     }
 
@@ -56,7 +134,7 @@ namespace customOSFiles {
     //% block="ОС: Прочитать весь файл %filename"
     //% weight=90
     export function osRead(filename: string): string {
-        return readFile(filename);
+        return safeRead(filename);
     }
 
     /**
@@ -66,7 +144,7 @@ namespace customOSFiles {
     //% line.defl=1
     //% weight=89
     export function osReadLine(filename: string, line: number): string {
-        let fullText = readFile(filename);
+        let fullText = safeRead(filename);
         if (fullText.length == 0) return "";
         
         let lines = fullText.split("\n");
@@ -88,7 +166,7 @@ namespace customOSFiles {
     //% block="ОС: Количество строк в файле %filename"
     //% weight=88
     export function osLineCount(filename: string): number {
-        let fullText = readFile(filename);
+        let fullText = safeRead(filename);
         if (fullText.length == 0) return 0;
         
         let lines = fullText.split("\n");
@@ -104,7 +182,7 @@ namespace customOSFiles {
     //% block="ОС: Файл %filename существует?"
     //% weight=85
     export function osExists(filename: string): boolean {
-        return fileExists(filename);
+        return safeExists(filename);
     }
 
     /**
@@ -113,7 +191,7 @@ namespace customOSFiles {
     //% block="ОС: Удалить файл %filename"
     //% weight=80
     export function osDelete(filename: string): void {
-        removeFile(filename);
+        safeRemove(filename);
         removeFromIndex(filename);
     }
 
@@ -123,7 +201,7 @@ namespace customOSFiles {
     //% block="ОС: Размер файла %filename (байт)"
     //% weight=75
     export function osSize(filename: string): number {
-        return getFileSize(filename);
+        return safeSize(filename);
     }
 
     /**
@@ -132,7 +210,7 @@ namespace customOSFiles {
     //% block="ОС: Список всех файлов"
     //% weight=70
     export function osList(): string[] {
-        let index = readFile(INDEX_FILE);
+        let index = safeRead(INDEX_FILE);
         if (index.length == 0) return [];
         return index.split(",");
     }
@@ -143,6 +221,6 @@ namespace customOSFiles {
     //% block="ОС: Форматировать систему (Очистить ВСЁ)"
     //% weight=60
     export function osFormat(): void {
-        clearStorage();
+        safeClear();
     }
 }
