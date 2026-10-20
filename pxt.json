@@ -1,7 +1,7 @@
 {
     "name": "microbit-os-fs",
     "version": "0.1.0",
-    "description": "Полноценный менеджер файлов для создания всего на micro:bit v2",
+    "description": "Полноценный менеджер файлов для создания ОС и не только на micro:bit v2",
     "dependencies": {
         "core": "*"
     },
