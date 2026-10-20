@@ -1,154 +1,164 @@
 /**
- * Архитектурный модуль Файловой Системы для micro:bit OS с защитой от симулятора
+ * Модуль Файловой Системы для micro:bit OS 
+ * С пофайловым открытием/закрытием в ОЗУ для экономии памяти и защитой от износа
  */
 //% color="#1e6b7b" icon="\uf0a0" block="Файлы ОС"
 namespace customOSFiles {
 
     const INDEX_FILE = ".sys_files";
 
-    // --- СЕКТОР ЗАЩИТЫ ОТ СИМУЛЯТОРА ---
-    // Виртуальное хранилище в оперативной памяти симулятора
-    let simStorage: { [key: string]: string } = {};
+    // --- БУФЕР ОТКРЫТЫХ ФАЙЛОВ В ОЗУ ---
+    let openFilesCache: { [key: string]: string } = {};
 
-    // Функция проверки: мы в симуляторе (на ПК) или на реальном железе?
     function isSimulator(): boolean {
-        // Если объект uBit не определен, значит мы на 100% в симуляторе браузера
         return typeof uBit === "undefined";
     }
 
-    // Обертка для записи данных
-    function safeWrite(filename: string, data: string): void {
+    // Внутренняя функция чтения индекса файлов (всегда работает напрямую с диском/симулятором)
+    function getDiskIndex(): string {
+        if (isSimulator()) return openFilesCache[INDEX_FILE] || "";
+        return readFile(INDEX_FILE);
+    }
+
+    // Внутренняя функция записи индекса файлов
+    function setDiskIndex(indexStr: string) {
         if (isSimulator()) {
-            simStorage[filename] = data;
+            openFilesCache[INDEX_FILE] = indexStr;
         } else {
-            writeFile(filename, data);
+            let oldIndex = readFile(INDEX_FILE);
+            if (oldIndex !== indexStr) {
+                writeFile(INDEX_FILE, indexStr);
+            }
         }
     }
 
-    // Обертка для чтения данных
-    function safeRead(filename: string): string {
-        if (isSimulator()) {
-            return simStorage[filename] || "";
-        } else {
-            return readFile(filename);
-        }
-    }
-
-    // Обертка для проверки существования файла
-    function safeExists(filename: string): boolean {
-        if (isSimulator()) {
-            return simStorage[filename] !== undefined;
-        } else {
-            return fileExists(filename);
-        }
-    }
-
-    // Обертка для удаления файла
-    function safeRemove(filename: string): void {
-        if (isSimulator()) {
-            delete simStorage[filename];
-        } else {
-            removeFile(filename);
-        }
-    }
-
-    // Обертка для дозаписи данных
-    function safeAppend(filename: string, data: string): void {
-        if (isSimulator()) {
-            let current = simStorage[filename] || "";
-            simStorage[filename] = current + data;
-        } else {
-            appendFile(filename, data);
-        }
-    }
-
-    // Обертка для получения размера файла
-    function safeSize(filename: string): number {
-        if (isSimulator()) {
-            let current = simStorage[filename] || "";
-            return current.length; 
-        } else {
-            return getFileSize(filename);
-        }
-    }
-
-    // Обертка для полной очистки
-    function safeClear(): void {
-        if (isSimulator()) {
-            simStorage = {};
-        } else {
-            clearStorage();
-        }
-    }
-    // --- КОНЕЦ СЕКТОРА ЗАЩИТЫ ---
-
-
-    // Системные функции индексов ОС теперь используют защищенные обертки
     function addToIndex(filename: string) {
         if (filename == INDEX_FILE) return;
-        let index = safeRead(INDEX_FILE);
-        let list = index.split(",");
+        let index = getDiskIndex();
+        let list = index.length > 0 ? index.split(",") : [];
         if (list.indexOf(filename) === -1) {
-            if (index.length > 0) {
-                safeAppend(INDEX_FILE, "," + filename);
-            } else {
-                safeWrite(INDEX_FILE, filename);
-            }
+            list.push(filename);
+            setDiskIndex(list.join(","));
         }
     }
 
     function removeFromIndex(filename: string) {
         if (filename == INDEX_FILE) return;
-        let index = safeRead(INDEX_FILE);
-        let list = index.split(",");
+        let index = getDiskIndex();
+        let list = index.length > 0 ? index.split(",") : [];
         let itemIndex = list.indexOf(filename);
         if (itemIndex !== -1) {
             list.splice(itemIndex, 1);
-            safeWrite(INDEX_FILE, list.join(","));
+            setDiskIndex(list.join(","));
+        }
+    }
+
+    // --- НОВЫЕ БЛОКИ УПРАВЛЕНИЯ ПОТОКАМИ ---
+
+    /**
+     * ОТКРЫТЬ ФАЙЛ: Загружает указанный файл в оперативную память для работы.
+     * Если файла нет на диске, он создается в ОЗУ как пустой.
+     */
+    //% block="ОС: Открыть файл %filename"
+    //% weight=115
+    export function osOpenFile(filename: string): void {
+        // Если файл уже открыт в ОЗУ, ничего не делаем
+        if (openFilesCache[filename] !== undefined) return;
+
+        if (isSimulator()) {
+            openFilesCache[filename] = openFilesCache[filename] || "";
+        } else {
+            // Проверяем физический диск
+            if (fileExists(filename)) {
+                openFilesCache[filename] = readFile(filename);
+            } else {
+                openFilesCache[filename] = ""; // Новый пустой файл в ОЗУ
+            }
         }
     }
 
     /**
-     * Создать или перезаписать файл в ОС.
+     * ЗАКРЫТЬ И СОХРАНИТЬ ФАЙЛ: Сверяет данные в ОЗУ с диском.
+     * Если данные изменились — сохраняет их на Flash. Затем удаляет файл из ОЗУ.
+     */
+    //% block="ОС: Закрыть и сохранить файл %filename"
+    //% weight=110
+    export function osCloseFile(filename: string): void {
+        // Если файл даже не был открыт в ОЗУ, игнорируем команду
+        if (openFilesCache[filename] === undefined) return;
+
+        if (!isSimulator()) {
+            let ramData = openFilesCache[filename];
+            let diskData = fileExists(filename) ? readFile(filename) : "___FILE_NOT_EXIST___";
+
+            // ЗАЩИТА ОТ ИЗНОСА: Пишем на чип только если данные РЕАЛЬНО изменились
+            if (ramData !== diskData) {
+                writeFile(filename, ramData);
+                addToIndex(filename);
+            }
+        } else {
+            addToIndex(filename);
+        }
+
+        // Выгружаем файл из оперативной памяти для освобождения ОЗУ
+        delete openFilesCache[filename];
+    }
+
+    /**
+     * Проверить, открыт ли файл в оперативной памяти прямо сейчас.
+     */
+    //% block="ОС: Файл %filename открыт в ОЗУ?"
+    //% weight=108
+    export function osIsFileOpen(filename: string): boolean {
+        return openFilesCache[filename] !== undefined;
+    }
+
+
+    // --- ПЕРЕРАБОТАННЫЕ СТАНДАРТНЫЕ БЛОКИ (РАБОТАЮТ ТОЛЬКО С ОТКРЫТЫМИ ФАЙЛАМИ) ---
+
+    /**
+     * Записать текст в файл (Файл ДОЛЖЕН быть предварительно открыт!).
      */
     //% block="ОС: Записать в файл %filename текст %data"
     //% weight=100
     export function osWrite(filename: string, data: string): void {
-        safeWrite(filename, data);
-        addToIndex(filename);
+        if (openFilesCache[filename] === undefined) return; // Защита: файл закрыт
+        openFilesCache[filename] = data;
     }
 
     /**
-     * Дописать строку в конец существующего файла. 
+     * Дописать строку в открытый файл в ОЗУ.
      */
     //% block="ОС: Дописать строку %data в файл %filename"
     //% weight=95
     export function osAppend(filename: string, data: string): void {
-        safeAppend(filename, data + "\n");
-        addToIndex(filename);
+        if (openFilesCache[filename] === undefined) return; // Защита: файл закрыт
+        let current = openFilesCache[filename];
+        openFilesCache[filename] = current + data + "\n";
     }
 
     /**
-     * Прочитать ВЕСЬ файл целиком как одну строку.
+     * Прочитать весь текст из открытого файла.
      */
     //% block="ОС: Прочитать весь файл %filename"
     //% weight=90
     export function osRead(filename: string): string {
-        return safeRead(filename);
+        if (openFilesCache[filename] === undefined) return ""; 
+        return openFilesCache[filename];
     }
 
     /**
-     * Прочитать конкретную строку из файла (индексация с 1).
+     * Прочитать конкретную строку из открытого файла.
      */
     //% block="ОС: Прочитать из файла %filename строку № %line"
     //% line.defl=1
     //% weight=89
     export function osReadLine(filename: string, line: number): string {
-        let fullText = safeRead(filename);
+        if (openFilesCache[filename] === undefined) return "";
+        let fullText = openFilesCache[filename];
         if (fullText.length == 0) return "";
         
         let lines = fullText.split("\n");
-        
         if (lines.length > 0 && lines[lines.length - 1] === "") {
             lines.pop();
         }
@@ -161,12 +171,13 @@ namespace customOSFiles {
     }
 
     /**
-     * Определить, сколько ВСЕГО строк содержится в файле.
+     * Получить количество строк в открытом файле.
      */
     //% block="ОС: Количество строк в файле %filename"
     //% weight=88
     export function osLineCount(filename: string): number {
-        let fullText = safeRead(filename);
+        if (openFilesCache[filename] === undefined) return 0;
+        let fullText = openFilesCache[filename];
         if (fullText.length == 0) return 0;
         
         let lines = fullText.split("\n");
@@ -177,50 +188,64 @@ namespace customOSFiles {
     }
 
     /**
-     * Проверить, существует ли файл.
+     * Проверить, существует ли файл вообще (ищет в глобальном списке на диске).
      */
-    //% block="ОС: Файл %filename существует?"
+    //% block="ОС: Файл %filename существует на диске?"
     //% weight=85
     export function osExists(filename: string): boolean {
-        return safeExists(filename);
+        if (openFilesCache[filename] !== undefined) return true;
+        let index = getDiskIndex();
+        if (index.length == 0) return false;
+        return index.split(",").indexOf(filename) !== -1;
     }
 
     /**
-     * Удалить файл.
+     * Полностью удалить файл (и из ОЗУ, и вычеркнуть с диска).
      */
     //% block="ОС: Удалить файл %filename"
     //% weight=80
     export function osDelete(filename: string): void {
-        safeRemove(filename);
+        if (openFilesCache[filename] !== undefined) {
+            delete openFilesCache[filename];
+        }
+        if (!isSimulator()) {
+            if (fileExists(filename)) {
+                removeFile(filename);
+            }
+        }
         removeFromIndex(filename);
     }
 
     /**
-     * Получить размер файла в байтах.
+     * Получить размер открытого файла в байтах.
      */
     //% block="ОС: Размер файла %filename (байт)"
     //% weight=75
     export function osSize(filename: string): number {
-        return safeSize(filename);
+        if (openFilesCache[filename] === undefined) return 0;
+        return openFilesCache[filename].length;
     }
 
     /**
-     * Получить массив всех файлов на диске.
+     * Список всех файлов, зарегистрированных в системе.
      */
-    //% block="ОС: Список всех файлов"
+    //% block="ОС: Список всех файлов на диске"
     //% weight=70
     export function osList(): string[] {
-        let index = safeRead(INDEX_FILE);
+        let index = getDiskIndex();
         if (index.length == 0) return [];
         return index.split(",");
     }
 
     /**
-     * Полное форматирование диска.
+     * Полное форматирование системы (очищает ОЗУ и стирает файлы с физического диска).
      */
     //% block="ОС: Форматировать систему (Очистить ВСЁ)"
     //% weight=60
     export function osFormat(): void {
-        safeClear();
+        openFilesCache = {};
+        if (!isSimulator()) {
+            clearStorage();
+        }
     }
 }
