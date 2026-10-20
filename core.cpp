@@ -6,58 +6,58 @@ using namespace pxt;
 namespace customOSFiles {
 
     //%
-    void writeFile(StringData* filename, StringData* data) {
-        ManagedString f(filename);
-        ManagedString d(data);
-        uBit.storage.put(f, (uint8_t*)d.toCharArray(), d.length());
+    void writeFile(String filename, String data) {
+        if (!filename || !data) return;
+        // Используем макрос MSTR для безопасного перевода строк в формат CODAL
+        uBit.storage.put(MSTR(filename), (uint8_t*)MSTR(data).toCharArray(), MSTR(data).length());
     }
 
     //%
-    StringData* readFile(StringData* filename) {
-        ManagedString f(filename);
-        KeyValuePair* pair = uBit.storage.get(f);
-        if (pair == NULL) return ManagedString("").leakData();
+    String readFile(String filename) {
+        if (!filename) return mkString("", 0);
+        KeyValuePair* pair = uBit.storage.get(MSTR(filename));
+        if (pair == NULL) return mkString("", 0);
         
         ManagedString d(pair->value, pair->valueLength);
         delete pair;
-        return d.leakData();
+        // Используем макрос PSTR для возврата строки обратно в MakeCode
+        return PSTR(d);
     }
 
     //%
-    void removeFile(StringData* filename) {
-        ManagedString f(filename);
-        uBit.storage.remove(f);
+    void removeFile(String filename) {
+        if (!filename) return;
+        uBit.storage.remove(MSTR(filename));
     }
 
     //%
-    bool fileExists(StringData* filename) {
-        ManagedString f(filename);
-        KeyValuePair* pair = uBit.storage.get(f);
+    bool fileExists(String filename) {
+        if (!filename) return false;
+        KeyValuePair* pair = uBit.storage.get(MSTR(filename));
         if (pair == NULL) return false;
         delete pair;
         return true;
     }
 
     //%
-    void appendFile(StringData* filename, StringData* data) {
-        ManagedString f(filename);
-        ManagedString d(data);
+    void appendFile(String filename, String data) {
+        if (!filename || !data) return;
         
-        KeyValuePair* pair = uBit.storage.get(f);
+        KeyValuePair* pair = uBit.storage.get(MSTR(filename));
         ManagedString existing("");
         if (pair != NULL) {
             existing = ManagedString(pair->value, pair->valueLength);
             delete pair;
         }
         
-        ManagedString updated = existing + d;
-        uBit.storage.put(f, (uint8_t*)updated.toCharArray(), updated.length());
+        ManagedString updated = existing + MSTR(data);
+        uBit.storage.put(MSTR(filename), (uint8_t*)updated.toCharArray(), updated.length());
     }
 
     //%
-    int getFileSize(StringData* filename) {
-        ManagedString f(filename);
-        KeyValuePair* pair = uBit.storage.get(f);
+    int getFileSize(String filename) {
+        if (!filename) return 0;
+        KeyValuePair* pair = uBit.storage.get(MSTR(filename));
         if (pair == NULL) return 0;
         int len = pair->valueLength;
         delete pair;
